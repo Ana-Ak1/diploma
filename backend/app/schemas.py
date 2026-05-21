@@ -3,6 +3,7 @@ from typing import Optional, List, Any
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 
+
 class DashboardSummary(BaseModel):
     total_products: int
     total_variants: int
@@ -226,3 +227,103 @@ class OperationLogItem(BaseModel):
     employee_name: Optional[str]
     comment: Optional[str]
     created_at: datetime
+
+class AIRecommendationCenterItem(BaseModel):
+    variant_id: int
+    product_id: int
+    product_name: str
+    product_sku: str
+    full_sku: str
+    barcode: Optional[str]
+    department_name: Optional[str]
+
+    sold_qty_7d: int
+    sold_qty_14d: int
+    sold_qty_30d: int
+    avg_daily_sales_7d: float
+
+    current_stock: int
+    reserved_stock: int
+    safety_stock: int
+    lead_time_days: int
+
+    stock_cover_days: Optional[float]
+
+    priority: str
+    recommendation_type: str
+    title: str
+    reason: str
+    suggested_quantity: int
+
+    stock_risk_score: float
+    reorder_score: float
+    display_score: float
+    slow_mover_score: float
+
+class AIChatRequest(BaseModel):
+    message: str
+    department: Optional[str] = "all"
+    subdepartment: Optional[str] = "all"
+
+class AIChatResponse(BaseModel):
+    answer: str
+    mode: str = "ai"
+
+class PurchaseOrderItemCreate(BaseModel):
+    variant_id: int
+    ordered_qty: int = Field(..., ge=1)
+
+
+class PurchaseOrderCreate(BaseModel):
+    supplier_id: int
+    created_by: Optional[str] = None
+    comment: Optional[str] = None
+    expected_date: Optional[date] = None
+
+    items: List[PurchaseOrderItemCreate]
+
+class PurchaseOrderReceiveItem(BaseModel):
+    received_qty: int = Field(..., ge=1)
+    employee_name: Optional[str] = None
+    comment: Optional[str] = None
+
+class PurchaseOrderItemOut(BaseModel):
+    item_id: int
+
+    variant_id: int
+    product_id: int
+
+    product_name: str
+    product_sku: str
+
+    full_sku: str
+
+    ordered_qty: int
+    received_qty: int
+
+    purchase_price: float
+
+    status: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PurchaseOrderOut(BaseModel):
+    order_id: int
+
+    supplier_id: int
+    supplier_name: Optional[str]
+
+    status: str
+
+    created_by: Optional[str]
+    comment: Optional[str]
+
+    expected_date: Optional[date]
+
+    created_at: datetime
+
+    items: List[PurchaseOrderItemOut] = []
+
+    model_config = ConfigDict(from_attributes=True)
+

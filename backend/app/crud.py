@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
+from app.ai_service import generate_ai_recommendation_explanation
+
 from app import models
 
 def get_dashboard_summary(
@@ -988,3 +990,702 @@ def get_operations_log(
         )
 
     return result
+
+def compute_sales_metrics(db: Session, variant_id: int):
+    today = datetime.now().date()
+
+    def get_sum(days: int):
+        value = (
+            db.query(
+                func.coalesce(
+                    func.sum(models.SalesHistory.quantity),
+                    0
+                )
+            )
+            .filter(
+                models.SalesHistory.variant_id == variant_id,
+                models.SalesHistory.sale_date >= today - timedelta(days=days),
+            )
+            .scalar()
+        )
+        return int(value or 0)
+
+    sales_7d = get_sum(7)
+    sales_14d = get_sum(14)
+    sales_30d = get_sum(30)
+
+    avg_daily_sales_7d = round(float(sales_7d) / 7, 2)
+
+    return {
+        "sold_qty_7d": sales_7d,
+        "sold_qty_14d": sales_14d,
+        "sold_qty_30d": sales_30d,
+        "avg_daily_sales_7d": avg_daily_sales_7d,
+    }
+
+
+def compute_stock_risk(variant, sales_metrics: dict):
+    current_stock = int(variant.current_stock or 0)
+    safety_stock = int(variant.safety_stock or 0)
+    reserved_stock = int(variant.reserved_stock or 0)
+    lead_time_days = int(variant.lead_time_days or 0)
+    avg_daily_sales = float(sales_metrics["avg_daily_sales_7d"] or 0)
+
+    available_stock = max(current_stock - reserved_stock, 0)
+
+    if avg_daily_sales > 0:
+        stock_cover_days = round(available_stock / avg_daily_sales, 2)
+    else:
+        stock_cover_days = None
+
+    risk_score = 0.0
+
+    if current_stock <= safety_stock:
+        risk_score += 40
+
+    if stock_cover_days is not None and stock_cover_days < lead_time_days:
+        risk_score += 35
+
+    if sales_metrics["sold_qty_7d"] >= 10:
+        risk_score += 15
+
+    if reserved_stock > 0:
+        risk_score += 10
+
+    risk_score = min(risk_score, 100)
+
+    return {
+        "stock_cover_days": stock_cover_days,
+        "stock_risk_score": round(risk_score, 2),
+    }
+
+
+def compute_reorder_need(variant, sales_metrics: dict, stock_metrics: dict):
+    current_stock = int(variant.current_stock or 0)
+    safety_stock = int(variant.safety_stock or 0)
+    lead_time_days = int(variant.lead_time_days or 0)
+    avg_daily_sales = float(sales_metrics["avg_daily_sales_7d"] or 0)
+
+    predicted_need_for_lead_time = round(avg_daily_sales * max(lead_time_days, 1))
+    target_stock = safety_stock + predicted_need_for_lead_time
+    suggested_quantity = max(target_stock - current_stock, 0)
+
+    reorder_score = 0.0
+
+    if stock_metrics["stock_cover_days"] is not None and stock_metrics["stock_cover_days"] < lead_time_days:
+        reorder_score += 45
+
+    if current_stock <= safety_stock:
+        reorder_score += 30
+
+    if sales_metrics["sold_qty_14d"] >= 15:
+        reorder_score += 15
+
+    if suggested_quantity > 0:
+        reorder_score += 10
+
+    reorder_score = min(reorder_score, 100)
+
+    return {
+        "reorder_score": round(reorder_score, 2),
+        "suggested_quantity": int(suggested_quantity),
+    }
+
+
+def compute_display_opportunity(variant, sales_metrics):
+    sold_7d = int(sales_metrics["sold_qty_7d"])
+    current_stock = int(variant.current_stock or 0)
+
+    score = 0
+
+    if sold_7d >= 5:
+        score += 30
+
+    if sold_7d >= 10:
+        score += 30
+
+    if current_stock >= 15:
+        score += 20
+
+    if current_stock >= 30:
+        score += 20
+
+    return {
+        "display_score": min(score, 100)
+    }
+
+def compute_slow_mover_flag(variant, sales_metrics: dict):
+    current_stock = int(variant.current_stock or 0)
+
+    slow_mover_score = 0.0
+
+    if sales_metrics["sold_qty_30d"] <= 2:
+        slow_mover_score += 50
+
+    if current_stock >= max(int(variant.safety_stock or 0) * 3, 20):
+        slow_mover_score += 30
+
+    if variant.abc_class == "C":
+        slow_mover_score += 10
+
+    if variant.xyz_class == "Z":
+        slow_mover_score += 10
+
+    slow_mover_score = min(slow_mover_score, 100)
+
+    return {
+        "slow_mover_score": round(slow_mover_score, 2),
+    }
+
+
+def _resolve_ai_priority(stock_risk_score, reorder_score, display_score, slow_mover_score):
+    max_score = max(stock_risk_score, reorder_score, display_score, slow_mover_score)
+
+    if max_score >= 80:
+        return "critical"
+    if max_score >= 60:
+        return "high"
+    if max_score >= 35:
+        return "medium"
+    return "low"
+
+def _resolve_ai_recommendation_type(
+    variant,
+    sales_metrics,
+    stock_metrics,
+    reorder_metrics,
+    display_metrics,
+    slow_metrics,
+):
+    current_stock = int(variant.current_stock or 0)
+    safety_stock = int(variant.safety_stock or 0)
+    sold_7d = int(sales_metrics["sold_qty_7d"])
+
+    if reorder_metrics["reorder_score"] >= 60:
+        return "replenish", "Заказать поставку"
+
+    if (
+        stock_metrics["stock_risk_score"] >= 60
+        and current_stock > 0
+    ):
+        return "replenish", "Срочно пополнить зал"
+
+    if (
+        sold_7d >= 8
+        and current_stock > safety_stock * 2
+        and stock_metrics["stock_risk_score"] < 50
+    ):
+        return "transfer", "Усилить выкладку"
+
+    if slow_metrics["slow_mover_score"] >= 60:
+        return "markdown", "Слабая оборачиваемость"
+
+    return "hold", "Наблюдать"
+
+def _build_ai_reason(
+    variant,
+    sales_metrics,
+    stock_metrics,
+    reorder_metrics,
+    display_metrics,
+    slow_metrics,
+    title,
+):
+    reasons = []
+
+    if sales_metrics["sold_qty_7d"] > 0:
+        reasons.append(
+            f"продажи за 7 дней: {sales_metrics['sold_qty_7d']}"
+        )
+
+    if int(variant.current_stock or 0) <= int(variant.safety_stock or 0):
+        reasons.append("остаток ниже или равен страховому запасу")
+
+    if stock_metrics["stock_cover_days"] is not None:
+        reasons.append(
+            f"покрытие остатком: {stock_metrics['stock_cover_days']} дн."
+        )
+
+    if title == "Заказать поставку":
+        reasons.append(
+            f"lead time: {int(variant.lead_time_days or 0)} дн."
+        )
+        reasons.append(
+            f"рекомендуемый заказ: {reorder_metrics['suggested_quantity']}"
+        )
+
+    if title == "Срочно пополнить зал":
+        reasons.append(
+            "товар активно продается и требует оперативного пополнения"
+        )
+
+    if title == "Усилить выкладку":
+        reasons.append(
+            "товар показывает высокий спрос и подходит для приоритетной выкладки"
+        )
+
+    if title == "Слабая оборачиваемость":
+        reasons.append(
+            f"продажи за 30 дней: {sales_metrics['sold_qty_30d']}"
+        )
+
+    if not reasons:
+        return (
+            "Недостаточно оснований для активного действия, "
+            "рекомендуется наблюдение."
+        )
+
+    return ", ".join(reasons).capitalize() + "."
+
+def get_ai_recommendation_center(
+    db: Session,
+    department: str | None = None,
+    subdepartment: str | None = None,
+    limit: int = 100,
+):
+    query = (
+        db.query(models.ProductVariant)
+        .options(
+            joinedload(models.ProductVariant.product).joinedload(
+                models.Product.department
+            )
+        )
+        .join(
+            models.Product,
+            models.ProductVariant.product_id == models.Product.id,
+        )
+        .join(
+            models.Department,
+            models.Product.department_id == models.Department.id,
+        )
+    )
+
+    normalized_department = (department or "").strip().lower()
+    normalized_subdepartment = (subdepartment or "").strip().lower()
+
+    if normalized_department and normalized_department != "all":
+        if normalized_department == "мужской":
+            query = query.filter(
+                func.lower(models.Department.name) == "men"
+            )
+
+        elif normalized_department == "женский":
+            query = query.filter(
+                func.lower(models.Department.name) == "woman"
+            )
+
+        elif normalized_department == "детский":
+            if normalized_subdepartment == "девочки":
+                query = query.filter(
+                    func.lower(models.Department.name) == "girls"
+                )
+
+            elif normalized_subdepartment == "мальчики":
+                query = query.filter(
+                    func.lower(models.Department.name) == "boys"
+                )
+
+            elif normalized_subdepartment == "малыши":
+                query = query.filter(
+                    func.lower(models.Department.name) == "baby"
+                )
+
+            else:
+                query = query.filter(
+                    func.lower(models.Department.name).in_(
+                        ["girls", "boys", "baby"]
+                    )
+                )
+
+    variants = query.limit(200).all()
+
+    result = []
+
+    for variant in variants:
+        product = variant.product
+        department_obj = product.department if product else None
+
+        sales_metrics = compute_sales_metrics(db, variant.id)
+
+        stock_metrics = compute_stock_risk(
+            variant,
+            sales_metrics,
+        )
+
+        reorder_metrics = compute_reorder_need(
+            variant,
+            sales_metrics,
+            stock_metrics,
+        )
+
+        display_metrics = compute_display_opportunity(
+            variant,
+            sales_metrics,
+        )
+
+        slow_metrics = compute_slow_mover_flag(
+            variant,
+            sales_metrics,
+        )
+
+        base_priority = _resolve_ai_priority(
+            stock_metrics["stock_risk_score"],
+            reorder_metrics["reorder_score"],
+            display_metrics["display_score"],
+            slow_metrics["slow_mover_score"],
+        )
+
+        base_recommendation_type, base_title = (
+            _resolve_ai_recommendation_type(
+                variant,
+                sales_metrics,
+                stock_metrics,
+                reorder_metrics,
+                display_metrics,
+                slow_metrics,
+            )
+        )
+
+        base_reason = _build_ai_reason(
+            variant,
+            sales_metrics,
+            stock_metrics,
+            reorder_metrics,
+            display_metrics,
+            slow_metrics,
+            base_title,
+        )
+
+        result.append(
+            {
+                "variant_id": int(variant.id),
+
+                "product_id": int(product.id)
+                if product
+                else 0,
+
+                "product_name": product.name
+                if product
+                else "",
+
+                "product_sku": product.sku
+                if product
+                else "",
+
+                "full_sku": variant.full_sku or "",
+                "barcode": variant.barcode,
+
+                "department_name": (
+                    department_obj.name
+                    if department_obj
+                    else None
+                ),
+
+                "sold_qty_7d": int(
+                    sales_metrics["sold_qty_7d"]
+                ),
+
+                "sold_qty_14d": int(
+                    sales_metrics["sold_qty_14d"]
+                ),
+
+                "sold_qty_30d": int(
+                    sales_metrics["sold_qty_30d"]
+                ),
+
+                "avg_daily_sales_7d": float(
+                    sales_metrics["avg_daily_sales_7d"]
+                ),
+
+                "current_stock": int(
+                    variant.current_stock or 0
+                ),
+
+                "reserved_stock": int(
+                    variant.reserved_stock or 0
+                ),
+
+                "safety_stock": int(
+                    variant.safety_stock or 0
+                ),
+
+                "lead_time_days": int(
+                    variant.lead_time_days or 0
+                ),
+
+                "stock_cover_days": (
+                    float(stock_metrics["stock_cover_days"])
+                    if stock_metrics["stock_cover_days"] is not None
+                    else None
+                ),
+
+                "priority": str(base_priority),
+
+                "recommendation_type": str(
+                    base_recommendation_type
+                ),
+
+                "title": str(base_title),
+
+                "reason": str(base_reason),
+
+                "suggested_quantity": int(
+                    reorder_metrics["suggested_quantity"]
+                ),
+
+                "stock_risk_score": float(
+                    stock_metrics["stock_risk_score"]
+                ),
+
+                "reorder_score": float(
+                    reorder_metrics["reorder_score"]
+                ),
+
+                "display_score": float(
+                    display_metrics["display_score"]
+                ),
+
+                "slow_mover_score": float(
+                    slow_metrics["slow_mover_score"]
+                ),
+            }
+        )
+
+    result.sort(
+        key=lambda x: (
+            {
+                "critical": 4,
+                "high": 3,
+                "medium": 2,
+                "low": 1,
+            }.get(x["priority"], 0),
+
+            x["display_score"],
+            x["reorder_score"],
+            x["stock_risk_score"],
+            x["slow_mover_score"],
+        ),
+        reverse=True,
+    )
+
+    # Gemini только для top-5
+    top_for_llm = result[:5]
+
+    for item in top_for_llm:
+        try:
+            ai_result = generate_ai_recommendation_explanation(item)
+
+            item["title"] = ai_result["title"]
+            item["reason"] = ai_result["reason"]
+            item["recommendation_type"] = ai_result["recommendation_type"]
+            item["priority"] = ai_result["priority"]
+
+        except Exception as llm_error:
+            print(
+                f"[GEMINI ERROR] "
+                f"variant_id={item['variant_id']}: "
+                f"{llm_error}"
+            )
+
+    return result[:limit]
+
+def create_purchase_order(db: Session, payload):
+    supplier = (
+        db.query(models.Supplier)
+        .filter(models.Supplier.id == payload.supplier_id)
+        .first()
+    )
+
+    if not supplier:
+        return None
+
+    order = models.PurchaseOrder(
+        supplier_id=payload.supplier_id,
+        status="draft",
+        created_by=payload.created_by,
+        comment=payload.comment,
+        expected_date=payload.expected_date,
+    )
+
+    db.add(order)
+    db.flush()
+
+    for item_payload in payload.items:
+        variant = (
+            db.query(models.ProductVariant)
+            .options(
+                joinedload(models.ProductVariant.product)
+            )
+            .filter(
+                models.ProductVariant.id == item_payload.variant_id
+            )
+            .first()
+        )
+
+        if not variant:
+            continue
+
+        product = variant.product
+
+        order_item = models.PurchaseOrderItem(
+            purchase_order_id=order.id,
+            variant_id=variant.id,
+            ordered_qty=item_payload.ordered_qty,
+            received_qty=0,
+            purchase_price=float(product.purchase_price or 0),
+            status="new",
+        )
+
+        db.add(order_item)
+
+        db.add(
+            models.OperationLog(
+                operation_type="purchase_order_created",
+                variant_id=variant.id,
+                quantity=item_payload.ordered_qty,
+                employee_name=payload.created_by,
+                comment="Создан заказ поставщику",
+            )
+        )
+
+    db.commit()
+    db.refresh(order)
+
+    return order
+
+def get_purchase_orders(
+    db: Session,
+    status: str | None = None,
+    limit: int = 50,
+):
+    query = (
+        db.query(models.PurchaseOrder)
+        .options(
+            joinedload(models.PurchaseOrder.supplier),
+            joinedload(models.PurchaseOrder.items)
+            .joinedload(models.PurchaseOrderItem.variant)
+            .joinedload(models.ProductVariant.product),
+        )
+    )
+
+    if status:
+        query = query.filter(
+            models.PurchaseOrder.status == status
+        )
+
+    return (
+        query.order_by(
+            models.PurchaseOrder.created_at.desc()
+        )
+        .limit(limit)
+        .all()
+    )
+
+def receive_purchase_order_item(
+    db: Session,
+    item_id: int,
+    payload,
+):
+    item = (
+        db.query(models.PurchaseOrderItem)
+        .options(
+            joinedload(models.PurchaseOrderItem.purchase_order),
+            joinedload(models.PurchaseOrderItem.variant)
+            .joinedload(models.ProductVariant.product),
+        )
+        .filter(models.PurchaseOrderItem.id == item_id)
+        .first()
+    )
+
+    if not item:
+        return None
+
+    variant = item.variant
+
+    variant.current_stock = int(
+        variant.current_stock or 0
+    ) + payload.received_qty
+
+    item.received_qty += payload.received_qty
+
+    if item.received_qty >= item.ordered_qty:
+        item.status = "received"
+    else:
+        item.status = "partial"
+
+    order = item.purchase_order
+
+    all_received = all(
+        x.status == "received"
+        for x in order.items
+    )
+
+    if all_received:
+        order.status = "received"
+    else:
+        order.status = "partial"
+
+    db.add(
+        models.OperationLog(
+            operation_type="purchase_order_received",
+            variant_id=variant.id,
+            quantity=payload.received_qty,
+            employee_name=payload.employee_name,
+            comment=payload.comment or "Приемка поставки",
+        )
+    )
+
+    db.commit()
+
+    db.refresh(item)
+
+    return item
+
+def serialize_purchase_order(order):
+    return {
+        "order_id": order.id,
+
+        "supplier_id": order.supplier_id,
+
+        "supplier_name": (
+            order.supplier.name
+            if order.supplier
+            else None
+        ),
+
+        "status": order.status,
+
+        "created_by": order.created_by,
+        "comment": order.comment,
+
+        "expected_date": order.expected_date,
+
+        "created_at": order.created_at,
+
+        "items": [
+            {
+                "item_id": item.id,
+
+                "variant_id": item.variant.id,
+
+                "product_id": item.variant.product.id,
+
+                "product_name": item.variant.product.name,
+
+                "product_sku": item.variant.product.sku,
+
+                "full_sku": item.variant.full_sku,
+
+                "ordered_qty": int(item.ordered_qty or 0),
+
+                "received_qty": int(item.received_qty or 0),
+
+                "purchase_price": float(
+                    item.purchase_price or 0
+                ),
+
+                "status": item.status,
+            }
+            for item in order.items
+        ]
+    }

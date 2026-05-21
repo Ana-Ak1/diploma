@@ -193,6 +193,245 @@ class ReplenishmentTaskItem(Base):
     task = relationship("ReplenishmentTask", back_populates="items")
     variant = relationship("ProductVariant")
 
+class PurchaseOrder(Base):
+    __tablename__ = "purchase_orders"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    supplier_id = Column(
+        BigInteger,
+        ForeignKey("suppliers.id"),
+        nullable=False,
+    )
+
+    status = Column(
+        String(20),
+        nullable=False,
+        default="draft",
+    )
+    # draft
+    # ordered
+    # partial
+    # received
+    # cancelled
+
+    created_by = Column(String(100))
+    comment = Column(Text)
+
+    expected_date = Column(Date, nullable=True)
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    supplier = relationship("Supplier")
+
+    items = relationship(
+        "PurchaseOrderItem",
+        back_populates="purchase_order",
+        cascade="all, delete-orphan",
+    )
+
+
+class PurchaseOrderItem(Base):
+    __tablename__ = "purchase_order_items"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    purchase_order_id = Column(
+        BigInteger,
+        ForeignKey("purchase_orders.id"),
+        nullable=False,
+    )
+
+    variant_id = Column(
+        BigInteger,
+        ForeignKey("product_variants.id"),
+        nullable=False,
+    )
+
+    ordered_qty = Column(Integer, nullable=False, default=0)
+
+    received_qty = Column(Integer, nullable=False, default=0)
+
+    purchase_price = Column(
+        Numeric(12, 2),
+        nullable=False,
+        default=0,
+    )
+
+    status = Column(
+        String(20),
+        nullable=False,
+        default="new",
+    )
+    # new
+    # partial
+    # received
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    purchase_order = relationship(
+        "PurchaseOrder",
+        back_populates="items",
+    )
+
+    variant = relationship("ProductVariant")
+
+class SupplyOrder(Base):
+    __tablename__ = "supply_orders"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    supplier_id = Column(
+        BigInteger,
+        ForeignKey("suppliers.id"),
+        nullable=False
+    )
+
+    department_id = Column(
+        BigInteger,
+        ForeignKey("departments.id"),
+        nullable=False
+    )
+
+    status = Column(
+        String(20),
+        nullable=False,
+        default="draft"
+    )
+    # draft / approved / ordered / received / cancelled
+
+    priority = Column(
+        String(15),
+        nullable=False,
+        default="medium"
+    )
+    # low / medium / high / critical
+
+    expected_delivery_date = Column(DateTime, nullable=True)
+
+    created_by = Column(String(100), nullable=True)
+
+    comment = Column(Text, nullable=True)
+
+    total_items = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now()
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    supplier = relationship("Supplier")
+
+    department = relationship("Department")
+
+    items = relationship(
+        "SupplyOrderItem",
+        back_populates="order",
+        cascade="all, delete-orphan"
+    )
+
+
+class SupplyOrderItem(Base):
+    __tablename__ = "supply_order_items"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    order_id = Column(
+        BigInteger,
+        ForeignKey("supply_orders.id"),
+        nullable=False
+    )
+
+    variant_id = Column(
+        BigInteger,
+        ForeignKey("product_variants.id"),
+        nullable=False
+    )
+
+    recommended_qty = Column(
+        Integer,
+        nullable=False,
+        default=0
+    )
+
+    approved_qty = Column(
+        Integer,
+        nullable=False,
+        default=0
+    )
+
+    received_qty = Column(
+        Integer,
+        nullable=False,
+        default=0
+    )
+
+    unit_purchase_price = Column(
+        Numeric(12, 2),
+        nullable=True
+    )
+
+    ai_reason = Column(Text, nullable=True)
+
+    status = Column(
+        String(20),
+        nullable=False,
+        default="new"
+    )
+    # new / approved / ordered / received
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now()
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now()
+    )
+
+    order = relationship(
+        "SupplyOrder",
+        back_populates="items"
+    )
+
+    variant = relationship("ProductVariant")
+
+
+
 
 class OperationLog(Base):
     __tablename__ = "operation_log"
@@ -218,4 +457,9 @@ class SalesHistory(Base):
     quantity = Column(Integer, nullable=False, default=0)
 
     variant = relationship("ProductVariant")
+    unit_sale_price = Column(Numeric(12, 2))
+    channel = Column(String(30), nullable=False, default="offline")
+    promo_flag = Column(Boolean, nullable=False, default=False)
+    return_quantity = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 

@@ -1,0 +1,53 @@
+:root {
+  --bg: #f5f1ea;
+  --bg-soft: #efe7dc;
+  --surface: #ffffff;
+  --surface-2: #f7f3ed;
+
+  --text: #171419;
+  --text-muted: #7b736d;
+  --text-soft: #9a9189;
+
+  --border: #ddd2c4;
+  --border-strong: #cdbda8;
+
+  --accent: #d7c3ab;
+  --accent-strong: #bfa285;
+
+  --danger: #8a3d2f;
+  --warning: #9b6a2b;
+  --success: #426148;
+
+  --shadow-sm: 0 4px 12px rgba(23, 20, 25, 0.05);
+  --shadow-md: 0 10px 24px rgba(23, 20, 25, 0.08);
+  --shadow-lg: 0 18px 40px rgba(23, 20, 25, 0.12);
+
+  --radius-sm: 12px;
+  --radius-md: 18px;
+  --radius-lg: 24px;
+  --radius-xl: 30px;
+
+  --space-1: 6px;
+  --space-2: 10px;
+  --space-3: 14px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 36px;
+
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-md: 15px;
+  --font-size-base: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 22px;
+  --font-size-2xl: 28px;
+  --font-size-3xl: 34px;
+
+  --line-tight: 1.15;
+  --line-normal: 1.45;
+  --line-loose: 1.6;
+
+  --app-max-width: 430px;
+}
